@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 import os
 import logging
 from PIL import Image
-from pyzbar.pyzbar import decode
+import cv2
+import numpy as np
 import io
 import aiohttp
 import re
@@ -35,15 +36,25 @@ processed_messages = set()
 message_lock = asyncio.Lock()
 
 async def read_qr_code(image_url):
-    """Read QR code from image"""
+    """Read QR code from image using OpenCV"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as response:
                 if response.status == 200:
+                    # Read image data
                     image_data = await response.read()
-                    image = Image.open(io.BytesIO(image_data))
-                    decoded = decode(image)
-                    return decoded[0].data.decode('utf-8') if decoded else None
+                    
+                    # Convert to OpenCV format
+                    nparr = np.frombuffer(image_data, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+                    
+                    # Initialize QR Code detector
+                    qr_detector = cv2.QRCodeDetector()
+                    
+                    # Detect and decode QR code
+                    data, bbox, _ = qr_detector.detectAndDecode(img)
+                    
+                    return data if data else None
     except Exception as e:
         logger.error(f"Error reading QR code: {e}")
         return None
