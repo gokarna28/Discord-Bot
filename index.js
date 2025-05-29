@@ -9,18 +9,17 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Track bot instance
+let isInitialized = false;
+
 // Healthcheck endpoint
 app.get('/', (req, res) => {
     res.status(200).json({ 
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        botStatus: client?.isReady() ? 'online' : 'starting'
+        botStatus: client?.isReady() ? 'online' : 'starting',
+        instance: isInitialized ? 'primary' : 'initializing'
     });
-});
-
-// Start Express server
-app.listen(PORT, () => {
-    console.log(`Health check server is running on port ${PORT}`);
 });
 
 // Create Discord client
@@ -193,6 +192,12 @@ async function assignRoleBasedOnMembership(member, membershipType) {
 
 // Bot ready event
 client.once('ready', async () => {
+    if (isInitialized) {
+        console.log('Preventing duplicate initialization');
+        return;
+    }
+    
+    isInitialized = true;
     console.log(`Bot is online as ${client.user.tag}`);
     
     try {
@@ -203,35 +208,47 @@ client.once('ready', async () => {
             const messages = await channel.messages.fetch({ limit: 100 });
             const botMessages = messages.filter(msg => 
                 msg.author.id === client.user.id && 
-                msg.content.includes('Bot is online')
+                (msg.content.includes('Bot is online') || msg.content.includes('Make Everyone Great Again'))
             );
             
-            // Delete old bot startup messages
+            // Delete old bot messages
             if (botMessages.size > 0) {
                 await channel.bulkDelete(botMessages).catch(console.error);
             }
             
             // Send new startup message
-            await channel.send('🤖 Bot is online and ready to process QR codes!');
+            await channel.send('🤖 Bot is online and ready to process QR codes!\nMake Everyone Great Again');
         }
     } catch (error) {
         console.error('Error during startup cleanup:', error);
     }
 });
 
+// Start Express server only once
+let server;
+if (!server) {
+    server = app.listen(PORT, () => {
+        console.log(`Health check server is running on port ${PORT}`);
+    });
+}
+
 // Add graceful shutdown handling
 process.on('SIGTERM', async () => {
     console.log('Received SIGTERM signal. Cleaning up...');
     try {
-        const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
-        if (channel) {
-            await channel.send('⚠️ Bot is restarting for maintenance. Please wait a moment...');
+        if (server) {
+            server.close();
+        }
+        if (client) {
+            const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
+            if (channel) {
+                await channel.send('⚠️ Bot is restarting for maintenance. Please wait a moment...\nMake Everyone Great Again');
+            }
+            client.destroy();
         }
     } catch (error) {
         console.error('Error during shutdown:', error);
     } finally {
-        // Destroy the client connection
-        client.destroy();
         process.exit(0);
     }
 });
@@ -322,8 +339,7 @@ client.on('messageCreate', async (message) => {
                 '📇 Contact Information:',
                 `👤 Name: ${contactInfo.name || 'N/A'}`,
                 `📱 Phone: ${contactInfo.phone || 'N/A'}`,
-                `📧 Email: ${contactInfo.email}`,
-                '\nMake Everyone Great Again'
+                `📧 Email: ${contactInfo.email}`
             ].filter(Boolean);
 
             await processingMsg.edit(response.join('\n'));
@@ -349,5 +365,7 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Login
-client.login(process.env.DISCORD_TOKEN); 
+// Only login if not already initialized
+if (!isInitialized) {
+    client.login(process.env.DISCORD_TOKEN);
+} 
