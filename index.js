@@ -39,18 +39,45 @@ async function readQRCode(imageUrl) {
         const response = await fetch(imageUrl);
         const buffer = await response.buffer();
         const image = await Jimp.read(buffer);
+
+        // Enhance image for better QR code reading
+        image
+            .normalize() // Normalize the image
+            .contrast(0.2) // Increase contrast slightly
+            .quality(100); // Ensure highest quality
+
+        // Try different scales if initial read fails
+        const scales = [1, 1.5, 0.5]; // Try original size, larger, and smaller
+        for (const scale of scales) {
+            try {
+                const scaledImage = image.clone().scale(scale);
+                const result = await new Promise((resolve, reject) => {
+                    const qr = new QrCode();
+                    qr.callback = (err, value) => {
+                        if (err) reject(err);
+                        resolve(value?.result);
+                    };
+                    qr.decode(scaledImage.bitmap);
+                });
+                
+                if (result) {
+                    return result;
+                }
+            } catch (err) {
+                console.log(`QR read attempt at scale ${scale} failed:`, err.message);
+                continue; // Try next scale if this one fails
+            }
+        }
         
-        return new Promise((resolve, reject) => {
-            const qr = new QrCode();
-            qr.callback = (err, value) => {
-                if (err) reject(err);
-                resolve(value?.result);
-            };
-            qr.decode(image.bitmap);
-        });
+        throw new Error('Could not read QR code at any scale');
     } catch (error) {
         console.error('Error reading QR code:', error);
-        return null;
+        if (error.message.includes('alignment patterns')) {
+            throw new Error('QR code is not clear or properly aligned. Please ensure the image is clear and the QR code is not distorted.');
+        } else if (error.message.includes('find finder')) {
+            throw new Error('Could not locate QR code in image. Please ensure the QR code is clearly visible.');
+        }
+        throw new Error('Failed to process QR code. Please try again with a clearer image.');
     }
 }
 
@@ -238,14 +265,14 @@ client.on('messageCreate', async (message) => {
     // Process image
     const attachment = message.attachments.first();
     if (!attachment.name.match(/\.(png|jpg|jpeg)$/i)) {
-        await message.channel.send(`❌ Please send a valid image file (PNG, JPG, or JPEG), ${message.author}.`);
+        await message.channel.send(`❌ Please send a valid image file (PNG, JPG, or JPEG).\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
         return;
     }
 
     // Create a unique lock key for this verification attempt
     const lockKey = `verification_${message.author.id}`;
     if (processingUsers.has(lockKey)) {
-        await message.reply('⚠️ Please wait for your current verification to complete.');
+        await message.reply('⚠️ Please wait for your current verification to complete.\nMake Everyone Great Again');
         return;
     }
 
@@ -254,58 +281,66 @@ client.on('messageCreate', async (message) => {
         // Add verification to processing set
         processingUsers.add(lockKey);
         
-        processingMsg = await message.channel.send(`🔍 Processing QR code for ${message.author}...`);
+        processingMsg = await message.channel.send(`🔍 Processing QR code...`);
 
         // First, just try to read the QR code before making any API calls
-        const qrData = await readQRCode(attachment.url);
-        if (!qrData) {
-            await processingMsg.edit(`❌ Could not read QR code. Please ensure image is clear and try again, ${message.author}.`);
-            return;
+        try {
+            const qrData = await readQRCode(attachment.url);
+            if (!qrData) {
+                await processingMsg.edit(`❌ Could not read QR code.\nPlease ensure the image is clear and try again.\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
+                return;
+            }
+
+            // Verify it's a qr1.be URL before proceeding with API calls
+            if (!qrData.includes('qr1.be')) {
+                await processingMsg.edit(`❌ Invalid QR code.\nMust be from qr1.be\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
+                return;
+            }
+
+            // Now we know we have a valid QR code, proceed with API calls
+            await processingMsg.edit(`🔍 Reading contact information...`);
+            const contactInfo = await fetchQR1BeData(qrData);
+            if (!contactInfo || !contactInfo.email) {
+                await processingMsg.edit(`❌ Could not read contact information.\nPlease try again.\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
+                return;
+            }
+
+            await processingMsg.edit(`🔍 Verifying membership...`);
+            const [isMember, membershipType] = await verifySmallStreetMembership(contactInfo.email);
+            if (!isMember || !membershipType) {
+                await processingMsg.edit(`❌ User not verified!\nPlease register and purchase a membership at https://www.smallstreet.app/login/ first.\nMake Everyone Great Again\nadmin\nLog In - Make Everyone Great Again`);
+                return;
+            }
+
+            // Only try to assign role if membership is verified
+            const roleName = await assignRoleBasedOnMembership(message.member, membershipType);
+
+            // Prepare success response
+            const response = [
+                `✅ Verified SmallStreet Membership - ${membershipType}`,
+                roleName ? `🎭 Discord Role Assigned: ${roleName}` : '',
+                '📇 Contact Information:',
+                `👤 Name: ${contactInfo.name || 'N/A'}`,
+                `📱 Phone: ${contactInfo.phone || 'N/A'}`,
+                `📧 Email: ${contactInfo.email}`,
+                '\nMake Everyone Great Again'
+            ].filter(Boolean);
+
+            await processingMsg.edit(response.join('\n'));
+
+        } catch (error) {
+            console.error('QR Code Error:', error);
+            const errorMessage = error.message || 'undefined';
+            await processingMsg.edit(`❌ An error occurred: ${errorMessage}\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
         }
-
-        // Verify it's a qr1.be URL before proceeding with API calls
-        if (!qrData.includes('qr1.be')) {
-            await processingMsg.edit(`❌ Invalid QR code. Must be from qr1.be, ${message.author}.`);
-            return;
-        }
-
-        // Now we know we have a valid QR code, proceed with API calls
-        await processingMsg.edit(`🔍 Reading contact information... (This may take a moment)`);
-        const contactInfo = await fetchQR1BeData(qrData);
-        if (!contactInfo || !contactInfo.email) {
-            await processingMsg.edit(`❌ Could not read contact information from QR code, ${message.author}. Please try again.`);
-            return;
-        }
-
-        await processingMsg.edit(`🔍 Verifying membership... (This may take a moment)`);
-        const [isMember, membershipType] = await verifySmallStreetMembership(contactInfo.email);
-        if (!isMember || !membershipType) {
-            await processingMsg.edit(`❌ Not a verified SmallStreet member, ${message.author}. Please register at https://www.smallstreet.app/login/`);
-            return;
-        }
-
-        // Only try to assign role if membership is verified
-        const roleName = await assignRoleBasedOnMembership(message.member, membershipType);
-
-        // Prepare success response
-        const response = [
-            `✅ Verified SmallStreet Membership - ${membershipType}`,
-            roleName ? `🎭 Discord Role Assigned: ${roleName}` : '',
-            '📇 Contact Information:',
-            `👤 Name: ${contactInfo.name || 'N/A'}`,
-            `📱 Phone: ${contactInfo.phone || 'N/A'}`,
-            `📧 Email: ${contactInfo.email}`
-        ].filter(Boolean);
-
-        await processingMsg.edit(response.join('\n'));
-
     } catch (error) {
         console.error('Error during verification:', error);
         if (processingMsg) {
+            const errorMessage = error.message || 'undefined';
             if (error.message?.includes('multiple retries')) {
-                await processingMsg.edit(`❌ Service is temporarily unavailable, ${message.author}. Please try again in a few minutes.`);
+                await processingMsg.edit(`❌ Service is temporarily unavailable.\nPlease try again in a few minutes.\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
             } else {
-                await processingMsg.edit(`❌ An error occurred. Please try again in a few moments, ${message.author}.`);
+                await processingMsg.edit(`❌ An error occurred: ${errorMessage}\nMake Everyone Great Again\nhttps://www.smallstreet.app/login/`);
             }
         }
     } finally {
