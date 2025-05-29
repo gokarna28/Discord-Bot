@@ -1,0 +1,30 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18.x'
+        
+    - name: Install Dependencies
+      run: npm install
+      
+    - name: Create .env file
+      run: |
+        echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" >> .env
+        echo "VERIFY_CHANNEL_ID=${{ secrets.VERIFY_CHANNEL_ID }}" >> .env
+        echo "MEGAVOTER_ROLE_ID=${{ secrets.MEGAVOTER_ROLE_ID }}" >> .env
+        echo "PATRON_ROLE_ID=${{ secrets.PATRON_ROLE_ID }}" >> .env
+      
+    - name: Start Bot
+      run: npm start 
