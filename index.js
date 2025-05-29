@@ -138,14 +138,26 @@ client.on('messageCreate', async (message) => {
     const attachment = message.attachments.first();
     if (!attachment.name.match(/\.(png|jpg|jpeg)$/i)) return;
 
+    // Check for recent verification attempts by this user
+    const recentMessages = await message.channel.messages.fetch({ limit: 10 });
+    const hasRecentVerification = recentMessages.some(msg => 
+        msg.author.bot && 
+        msg.mentions.users.has(message.author.id) &&
+        Date.now() - msg.createdTimestamp < 5000
+    );
+
+    if (hasRecentVerification) {
+        return; // Prevent duplicate processing
+    }
+
     // Send initial message
-    const processingMsg = await message.channel.send('🔍 Processing your QR code...');
+    const processingMsg = await message.channel.send(`🔍 Processing QR code for ${message.author}...`);
 
     try {
         // Read QR code
         const qrData = await readQRCode(attachment.url);
         if (!qrData) {
-            await processingMsg.edit('❌ Could not read QR code. Please ensure image is clear.');
+            await processingMsg.edit(`❌ Could not read QR code. Please ensure image is clear, ${message.author}.`);
             return;
         }
 
@@ -187,7 +199,7 @@ client.on('messageCreate', async (message) => {
         await processingMsg.edit(response.join('\n'));
     } catch (error) {
         console.error('Error processing message:', error);
-        await processingMsg.edit('❌ User not verified!\nPlease register and purchase a membership at https://www.smallstreet.app/login/ first.');
+        await processingMsg.edit(`❌ User not verified!\nPlease register and purchase a membership at https://www.smallstreet.app/login/ first, ${message.author}.`);
     }
 });
 
