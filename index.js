@@ -269,49 +269,44 @@ client.on('messageCreate', async (message) => {
             return;
         }
 
-        try {
-            // Now we know we have a valid QR code, proceed with API calls
-            await processingMsg.edit(`🔍 Reading contact information... (This may take a moment)`);
-            const contactInfo = await fetchQR1BeData(qrData);
-            if (!contactInfo || !contactInfo.email) {
-                await processingMsg.edit(`❌ Could not read contact information from QR code, ${message.author}. Please try again.`);
-                return;
-            }
-
-            await processingMsg.edit(`🔍 Verifying membership... (This may take a moment)`);
-            const [isMember, membershipType] = await verifySmallStreetMembership(contactInfo.email);
-            if (!isMember || !membershipType) {
-                await processingMsg.edit(`❌ Not a verified SmallStreet member, ${message.author}. Please register at https://www.smallstreet.app/login/`);
-                return;
-            }
-
-            // Only try to assign role if membership is verified
-            const roleName = await assignRoleBasedOnMembership(message.member, membershipType);
-
-            // Prepare success response
-            const response = [
-                `✅ Verified SmallStreet Membership - ${membershipType}`,
-                roleName ? `🎭 Discord Role Assigned: ${roleName}` : '',
-                '📇 Contact Information:',
-                `👤 Name: ${contactInfo.name || 'N/A'}`,
-                `📱 Phone: ${contactInfo.phone || 'N/A'}`,
-                `📧 Email: ${contactInfo.email}`
-            ].filter(Boolean);
-
-            await processingMsg.edit(response.join('\n'));
-
-        } catch (error) {
-            console.error('API Error:', error);
-            if (error.message.includes('multiple retries')) {
-                await processingMsg.edit(`❌ Service is temporarily unavailable, ${message.author}. Please try again in a few minutes.`);
-            } else {
-                await processingMsg.edit(`❌ An error occurred during verification, ${message.author}. Please try again.`);
-            }
+        // Now we know we have a valid QR code, proceed with API calls
+        await processingMsg.edit(`🔍 Reading contact information... (This may take a moment)`);
+        const contactInfo = await fetchQR1BeData(qrData);
+        if (!contactInfo || !contactInfo.email) {
+            await processingMsg.edit(`❌ Could not read contact information from QR code, ${message.author}. Please try again.`);
+            return;
         }
+
+        await processingMsg.edit(`🔍 Verifying membership... (This may take a moment)`);
+        const [isMember, membershipType] = await verifySmallStreetMembership(contactInfo.email);
+        if (!isMember || !membershipType) {
+            await processingMsg.edit(`❌ Not a verified SmallStreet member, ${message.author}. Please register at https://www.smallstreet.app/login/`);
+            return;
+        }
+
+        // Only try to assign role if membership is verified
+        const roleName = await assignRoleBasedOnMembership(message.member, membershipType);
+
+        // Prepare success response
+        const response = [
+            `✅ Verified SmallStreet Membership - ${membershipType}`,
+            roleName ? `🎭 Discord Role Assigned: ${roleName}` : '',
+            '📇 Contact Information:',
+            `👤 Name: ${contactInfo.name || 'N/A'}`,
+            `📱 Phone: ${contactInfo.phone || 'N/A'}`,
+            `📧 Email: ${contactInfo.email}`
+        ].filter(Boolean);
+
+        await processingMsg.edit(response.join('\n'));
+
     } catch (error) {
         console.error('Error during verification:', error);
         if (processingMsg) {
-            await processingMsg.edit(`❌ An error occurred. Please try again in a few moments, ${message.author}.`);
+            if (error.message?.includes('multiple retries')) {
+                await processingMsg.edit(`❌ Service is temporarily unavailable, ${message.author}. Please try again in a few minutes.`);
+            } else {
+                await processingMsg.edit(`❌ An error occurred. Please try again in a few moments, ${message.author}.`);
+            }
         }
     } finally {
         // Always clean up
