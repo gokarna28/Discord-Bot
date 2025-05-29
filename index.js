@@ -3,6 +3,25 @@ const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const fetch = require('node-fetch');
 const Jimp = require('jimp');
 const QrCode = require('qrcode-reader');
+const express = require('express');
+
+// Create Express app
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Healthcheck endpoint
+app.get('/', (req, res) => {
+    res.status(200).json({ 
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        botStatus: client?.isReady() ? 'online' : 'starting'
+    });
+});
+
+// Start Express server
+app.listen(PORT, () => {
+    console.log(`Health check server is running on port ${PORT}`);
+});
 
 // Create Discord client
 const client = new Client({
@@ -146,13 +165,68 @@ async function assignRoleBasedOnMembership(member, membershipType) {
 }
 
 // Bot ready event
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Bot is online as ${client.user.tag}`);
-    const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
-    if (channel) {
-        channel.send('🤖 Bot is online and ready to process QR codes!');
+    
+    try {
+        // Clear any existing bot messages in the verification channel
+        const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
+        if (channel) {
+            // Fetch recent messages
+            const messages = await channel.messages.fetch({ limit: 100 });
+            const botMessages = messages.filter(msg => 
+                msg.author.id === client.user.id && 
+                msg.content.includes('Bot is online')
+            );
+            
+            // Delete old bot startup messages
+            if (botMessages.size > 0) {
+                await channel.bulkDelete(botMessages).catch(console.error);
+            }
+            
+            // Send new startup message
+            await channel.send('🤖 Bot is online and ready to process QR codes!');
+        }
+    } catch (error) {
+        console.error('Error during startup cleanup:', error);
     }
 });
+
+// Add graceful shutdown handling
+process.on('SIGTERM', async () => {
+    console.log('Received SIGTERM signal. Cleaning up...');
+    try {
+        const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
+        if (channel) {
+            await channel.send('⚠️ Bot is restarting for maintenance. Please wait a moment...');
+        }
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+    } finally {
+        // Destroy the client connection
+        client.destroy();
+        process.exit(0);
+    }
+});
+
+process.on('SIGINT', async () => {
+    console.log('Received SIGINT signal. Cleaning up...');
+    try {
+        const channel = client.channels.cache.get(process.env.VERIFY_CHANNEL_ID);
+        if (channel) {
+            await channel.send('⚠️ Bot is shutting down. Please wait a moment...');
+        }
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+    } finally {
+        // Destroy the client connection
+        client.destroy();
+        process.exit(0);
+    }
+});
+
+// Add a Set to track processing messages
+const processingUsers = new Set();
 
 // Message handling
 client.on('messageCreate', async (message) => {
@@ -168,22 +242,20 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // Check for recent verification attempts by this user
-    const recentMessages = await message.channel.messages.fetch({ limit: 10 });
-    const hasRecentVerification = recentMessages.some(msg => 
-        msg.author.bot && 
-        msg.mentions.users.has(message.author.id) &&
-        Date.now() - msg.createdTimestamp < 5000
-    );
-
-    if (hasRecentVerification) {
-        await message.channel.send(`⚠️ Please wait a few seconds before trying again, ${message.author}.`);
-        return; // Prevent duplicate processing
+    // Create a unique lock key for this verification attempt
+    const lockKey = `verification_${message.author.id}`;
+    if (processingUsers.has(lockKey)) {
+        await message.reply('⚠️ Please wait for your current verification to complete.');
+        return;
     }
 
-    const processingMsg = await message.channel.send(`🔍 Processing QR code for ${message.author}...`);
-
+    let processingMsg = null;
     try {
+        // Add verification to processing set
+        processingUsers.add(lockKey);
+        
+        processingMsg = await message.channel.send(`🔍 Processing QR code for ${message.author}...`);
+
         // First, just try to read the QR code before making any API calls
         const qrData = await readQRCode(attachment.url);
         if (!qrData) {
@@ -237,8 +309,13 @@ client.on('messageCreate', async (message) => {
             }
         }
     } catch (error) {
-        console.error('QR Processing Error:', error);
-        await processingMsg.edit(`❌ Failed to process the QR code, ${message.author}. Please try again with a clearer image.`);
+        console.error('Error during verification:', error);
+        if (processingMsg) {
+            await processingMsg.edit(`❌ An error occurred. Please try again in a few moments, ${message.author}.`);
+        }
+    } finally {
+        // Always clean up
+        processingUsers.delete(lockKey);
     }
 });
 
